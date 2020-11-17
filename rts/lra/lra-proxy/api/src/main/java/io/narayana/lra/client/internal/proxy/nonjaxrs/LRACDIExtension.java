@@ -21,14 +21,10 @@
  */
 package io.narayana.lra.client.internal.proxy.nonjaxrs;
 
-import io.narayana.lra.client.internal.proxy.nonjaxrs.jandex.DotNames;
-import io.narayana.lra.client.internal.proxy.nonjaxrs.jandex.JandexAnnotationResolver;
-import io.narayana.lra.logging.LRALogger;
-import org.jboss.jandex.AnnotationInstance;
-import org.jboss.jandex.AnnotationTarget;
-import org.jboss.jandex.ClassInfo;
-import org.jboss.jandex.DotName;
-import org.jboss.jandex.Index;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.enterprise.event.Observes;
@@ -38,11 +34,8 @@ import javax.enterprise.inject.spi.Bean;
 import javax.enterprise.inject.spi.BeanManager;
 import javax.enterprise.inject.spi.Extension;
 import javax.enterprise.util.AnnotationLiteral;
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+
+import io.narayana.lra.logging.LRALogger;
 
 /**
  * This CDI extension collects all LRA participants that contain
@@ -51,40 +44,32 @@ import java.util.Set;
  */
 public class LRACDIExtension implements Extension {
 
-    private ClassPathIndexer classPathIndexer = new ClassPathIndexer();
-    private Index index;
     private final Map<String, LRAParticipant> participants = new HashMap<>();
+    private LraClassFinder classFinder = new NarayanaClassFinder();
 
     public void observe(@Observes AfterBeanDiscovery event, BeanManager beanManager) throws IOException, ClassNotFoundException {
-        index = classPathIndexer.createIndex();
+        System.err.println("LRAD: observing in narayana extension");
+        System.err.flush();
 
-        List<AnnotationInstance> annotations = index.getAnnotations(DotName.createSimple("javax.ws.rs.Path"));
-
-        for (AnnotationInstance annotation : annotations) {
-            ClassInfo classInfo;
-            AnnotationTarget target = annotation.target();
-
-            if (target.kind().equals(AnnotationTarget.Kind.CLASS)) {
-                classInfo = target.asClass();
-            } else if (target.kind().equals(AnnotationTarget.Kind.METHOD)) {
-                classInfo = target.asMethod().declaringClass();
-            } else {
+        Set<Class<?>> classes = classFinder.getClasses();
+        for (Class<?> javaClass : classes) {
+        //return participant.hasNonJaxRsMethods() ? participant : null;
+            LRAParticipant participant = new LRAParticipant(javaClass);
+            if (!participant.hasNonJaxRsMethods()) {
                 continue;
             }
-
-            LRAParticipant participant = getAsParticipant(classInfo);
-            if (participant != null) {
-                participants.put(participant.getJavaClass().getName(), participant);
-                Set<Bean<?>> participantBeans = beanManager.getBeans(participant.getJavaClass(), new AnnotationLiteral<Any>() {});
-                if (participantBeans.isEmpty()) {
-                    // resource is not registered as managed bean so register a custom managed instance
-                    try {
-                        participant.setInstance(participant.getJavaClass().newInstance());
-                    } catch (InstantiationException | IllegalAccessException e) {
-                        LRALogger.i18NLogger.error_cannotProcessParticipant(e);
-                    }
+            participants.put(participant.getJavaClass().getName(), participant);
+            Set<Bean<?>> participantBeans = beanManager.getBeans(participant.getJavaClass(), new AnnotationLiteral<Any>() {});
+            if (participantBeans.isEmpty()) {
+                // resource is not registered as managed bean so register a custom managed instance
+                try {
+                    participant.setInstance(participant.getJavaClass().newInstance());
+                } catch (InstantiationException | IllegalAccessException e) {
+                    LRALogger.i18NLogger.error_cannotProcessParticipant(e);
                 }
             }
+
+
         }
 
         event.addBean()
@@ -94,42 +79,4 @@ public class LRACDIExtension implements Extension {
             .createWith(context -> new LRAParticipantRegistry(participants));
     }
 
-    /**
-     * Collects all non-JAX-RS participant methods in the defined Java class
-     *
-     * @param classInfo a Jandex class info of the class to be scanned
-     * @return Collected methods wrapped in {@link LRAParticipant} class or null if no non-JAX-RS methods have been found
-     */
-    private LRAParticipant getAsParticipant(ClassInfo classInfo) throws ClassNotFoundException {
-        if (!isLRAParticipant(classInfo)) {
-            return null;
-        }
-
-        Class<?> javaClass = getClass().getClassLoader().loadClass(classInfo.name().toString());
-
-        LRAParticipant participant = new LRAParticipant(javaClass);
-        return participant.hasNonJaxRsMethods() ? participant : null;
-    }
-
-    /**
-     * Returns whether the classinfo represents an LRA participant --
-     * Class contains LRA method and either one or both of Compensate and/or AfterLRA methods.
-     *
-     * @param classInfo Jandex class object to scan for annotations
-     *
-     * @return true if the class is a valid LRA participant, false otherwise
-     * @throws IllegalStateException if there is LRA annotation but no Compensate or AfterLRA is found
-     */
-    private boolean isLRAParticipant(ClassInfo classInfo) {
-        Map<DotName, List<AnnotationInstance>> annotations = JandexAnnotationResolver.getAllAnnotationsFromClassInfoHierarchy(classInfo.name(), index);
-
-        if (!annotations.containsKey(DotNames.LRA)) {
-            return false;
-        } else if (!annotations.containsKey(DotNames.COMPENSATE) && !annotations.containsKey(DotNames.AFTER_LRA)) {
-            throw new IllegalStateException(String.format("%s: %s",
-                classInfo.name(), "The class contains an LRA method and no Compensate or AfterLRA method was found."));
-        } else {
-            return true;
-        }
-    }
 }
