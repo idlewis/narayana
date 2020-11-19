@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.ServiceLoader;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.enterprise.event.Observes;
@@ -45,7 +46,11 @@ import io.narayana.lra.logging.LRALogger;
 public class LRACDIExtension implements Extension {
 
     private final Map<String, LRAParticipant> participants = new HashMap<>();
-    private LraClassFinder classFinder = new NarayanaClassFinder();
+    private LraClassFinder classFinder;
+    {
+        ServiceLoader<LraClassFinder> finderLoader = ServiceLoader.load(LraClassFinder.class, this.getClass().getClassLoader());
+        classFinder = finderLoader.findFirst().orElseGet(() -> new NarayanaClassFinder());
+    }
 
     public void observe(@Observes AfterBeanDiscovery event, BeanManager beanManager) throws IOException, ClassNotFoundException {
         System.err.println("LRAD: observing in narayana extension");
